@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+data/
+secrets/
+.env
+deploy/.env
+.deployed-tag
+*.log
+.DS_Store
