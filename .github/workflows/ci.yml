@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, unit and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache MongoDB test binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Dependency audit (production dependencies, high and above)
+        run: npm run audit:prod
+
+  e2e:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+    services:
+      mongo:
+        image: mongo:8.0
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate throwaway secrets
+        run: npm run setup
+      - name: Start authority and API
+        run: |
+          node --env-file=.env services/authority/src/index.js > authority.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:7000/authority/health && break; sleep 1; done
+          node --env-file=.env services/api/src/index.js > api.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:4000/api/health && break; sleep 1; done
+      - run: npm run smoke
+      - name: Service logs
+        if: failure()
+        run: tail -n 100 authority.log api.log
+
+  images:
+    name: Build and scan container images
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - { name: api, dockerfile: deploy/docker/service.Dockerfile, service: api }
+          - { name: authority, dockerfile: deploy/docker/service.Dockerfile, service: authority }
+          - { name: web, dockerfile: deploy/docker/web.Dockerfile, service: "" }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          build-args: SERVICE=${{ matrix.service }}
+          tags: secureshare-${{ matrix.name }}:ci
+          load: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: secureshare-${{ matrix.name }}:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  compose:
+    name: Validate deployment config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          mkdir -p secrets
+          for f in jwt_private.pem jwt_public.pem authority_kek internal_token server_secret mongo_root_password mongo_api_password mongo_authority_password; do echo x > secrets/$f; done
+          cp deploy/.env.example deploy/.env
+          docker compose --env-file deploy/.env config --quiet
+      - name: Validate Caddyfile
+        run: docker run --rm -v "$PWD/deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  secrets-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
