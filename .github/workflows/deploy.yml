@@ -1,0 +1,74 @@
+name: Deploy
+
+# Deploys signed images to a Linux host running Docker, over SSH.
+# Repository configuration (Settings > Environments > production):
+#   secrets:   DEPLOY_SSH_KEY (private key), DEPLOY_KNOWN_HOSTS (ssh-keyscan output)
+#   variables: DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH (e.g. /opt/secureshare), DOMAIN
+# The host needs Docker + compose, ./secrets created once with `npm run setup`
+# (or scripts/gen-secrets.mjs), and deploy/.env. Add required reviewers to the
+# environment to make every production deploy a manual approval.
+on:
+  workflow_run:
+    workflows: [Release images]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to deploy (e.g. sha-<commit> or 1.2.3)
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN }}
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.event.inputs.tag || format('sha-{0}', github.event.workflow_run.head_sha) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Verify image signatures before deploying
+        uses: sigstore/cosign-installer@v3
+      - run: |
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_PREFIX=$prefix" >> "$GITHUB_ENV"
+          for svc in api authority web; do
+            cosign verify "$prefix-$svc:$TAG" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          done
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+      - name: Copy deployment files
+        run: |
+          ssh -i ~/.ssh/id_deploy ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }} "mkdir -p '${{ vars.DEPLOY_PATH }}/deploy/mongo'"
+          scp -i ~/.ssh/id_deploy docker-compose.yml ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/
+          scp -i ~/.ssh/id_deploy deploy/mongo/init-users.js ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/deploy/mongo/
+          scp -i ~/.ssh/id_deploy scripts/remote-deploy.sh ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/
+      - name: Pull, restart and health-check (rolls back on failure)
+        run: |
+          ssh -i ~/.ssh/id_deploy ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }} \
+            "cd '${{ vars.DEPLOY_PATH }}' && IMAGE_PREFIX='${IMAGE_PREFIX}' bash remote-deploy.sh '${TAG}'"
+      - name: External health check
+        run: |
+          for i in $(seq 1 20); do
+            curl -fsS "https://${{ vars.DOMAIN }}/api/health" && curl -fsS "https://${{ vars.DOMAIN }}/authority/health" && exit 0
+            sleep 5
+          done
+          exit 1
