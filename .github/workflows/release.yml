@@ -29,7 +29,7 @@ jobs:
           - { name: authority, dockerfile: deploy/docker/service.Dockerfile, service: authority }
           - { name: web, dockerfile: deploy/docker/web.Dockerfile, service: "" }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Lower-case image prefix
