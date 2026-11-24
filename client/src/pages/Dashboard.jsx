@@ -4,6 +4,7 @@ import MyFiles from '../components/MyFiles.jsx';
 import SharedFiles from '../components/SharedFiles.jsx';
 import KeysPanel from '../components/KeysPanel.jsx';
 import AdminPanel from '../components/AdminPanel.jsx';
+import IntegrationsPanel from '../components/IntegrationsPanel.jsx';
 
 export default function Dashboard({ session, onSignOut }) {
   const isAdmin = session.user.role === 'admin';
@@ -44,6 +45,7 @@ export default function Dashboard({ session, onSignOut }) {
     ['shared', 'Shared with me'],
     ['keys', 'Keys & attributes'],
     ...(isAdmin ? [['admin', 'Administration']] : []),
+    ['integrations', '⚙️ Integrations'],
   ];
 
   return (
@@ -69,6 +71,7 @@ export default function Dashboard({ session, onSignOut }) {
         {tab === 'shared' && <SharedFiles session={session} abeKey={abeKey} refreshKey={refreshKey} />}
         {tab === 'keys' && <KeysPanel session={session} abeKey={abeKey} refreshKey={refreshKey} />}
         {tab === 'admin' && isAdmin && <AdminPanel />}
+        {tab === 'integrations' && <IntegrationsPanel session={session} />}
       </main>
     </div>
   );

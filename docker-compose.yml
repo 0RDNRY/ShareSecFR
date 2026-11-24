@@ -1,11 +1,14 @@
-# SecureShare production stack.
-#   npm run setup                         # once: creates ./secrets
-#   cp deploy/.env.example deploy/.env    # set DOMAIN etc.
-#   docker compose --env-file deploy/.env up -d --build      # build locally, or
-#   docker compose --env-file deploy/.env pull && ... up -d  # use CI-built images
+# SecureShareFR production stack – Nginx edition.
 #
-# Network layout: only `web` (Caddy) publishes ports. MongoDB and the authority's
-# internal port sit on the `backend` network, which has no route to the outside.
+#   npm run setup                              # generates ./secrets + .env
+#   cd deploy/nginx && sh gen-local-cert.sh   # generate self-signed TLS cert (local dev)
+#   cp deploy/.env.example deploy/.env         # configure DOMAIN etc.
+#   docker compose --env-file deploy/.env up -d --build
+#
+# Network layout:
+#   Only `web` (Nginx) publishes ports 80 and 443.
+#   MongoDB and authority's internal port sit on the `backend` network with no outside access.
+#   The api and authority services are on both frontend and backend networks.
 
 x-hardening: &hardening
   read_only: true
@@ -19,28 +22,32 @@ x-hardening: &hardening
     options: { max-size: "10m", max-file: "5" }
 
 services:
+  # ── Nginx: reverse proxy + TLS + static SPA ──────────────────────────────
   web:
     <<: *hardening
     image: ${IMAGE_PREFIX:-ghcr.io/your-org/secureshare}-web:${TAG:-latest}
     build: { context: ., dockerfile: deploy/docker/web.Dockerfile }
     cap_add: [NET_BIND_SERVICE]
-    environment:
-      DOMAIN: ${DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    read_only: false     # Nginx needs to write temp files
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
     volumes:
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro    # TLS certificates (self-signed or Let's Encrypt)
     networks: [frontend]
     depends_on:
-      api: { condition: service_healthy }
+      api:       { condition: service_healthy }
       authority: { condition: service_healthy }
     deploy:
       resources: { limits: { memory: 256m, pids: 200 } }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
+  # ── API service ───────────────────────────────────────────────────────────
   api:
     <<: *hardening
     image: ${IMAGE_PREFIX:-ghcr.io/your-org/secureshare}-api:${TAG:-latest}
@@ -67,11 +74,18 @@ services:
       - blobs:/data/blobs
     networks: [frontend, backend]
     depends_on:
-      mongo: { condition: service_healthy }
+      mongo:     { condition: service_healthy }
       authority: { condition: service_healthy }
     deploy:
       resources: { limits: { memory: 768m, pids: 200 } }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
+  # ── Attribute authority ───────────────────────────────────────────────────
   authority:
     <<: *hardening
     image: ${IMAGE_PREFIX:-ghcr.io/your-org/secureshare}-authority:${TAG:-latest}
@@ -94,7 +108,14 @@ services:
       mongo: { condition: service_healthy }
     deploy:
       resources: { limits: { memory: 512m, pids: 200 } }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7000/authority/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
+  # ── MongoDB ───────────────────────────────────────────────────────────────
   mongo:
     image: mongo:8.0
     restart: unless-stopped
@@ -127,15 +148,13 @@ networks:
 volumes:
   blobs: {}
   mongo_data: {}
-  caddy_data: {}
-  caddy_config: {}
 
 secrets:
-  jwt_private.pem: { file: ./secrets/jwt_private.pem }
-  jwt_public.pem: { file: ./secrets/jwt_public.pem }
-  authority_kek: { file: ./secrets/authority_kek }
-  internal_token: { file: ./secrets/internal_token }
-  server_secret: { file: ./secrets/server_secret }
-  mongo_root_password: { file: ./secrets/mongo_root_password }
-  mongo_api_password: { file: ./secrets/mongo_api_password }
-  mongo_authority_password: { file: ./secrets/mongo_authority_password }
+  jwt_private.pem:            { file: ./secrets/jwt_private.pem }
+  jwt_public.pem:             { file: ./secrets/jwt_public.pem }
+  authority_kek:              { file: ./secrets/authority_kek }
+  internal_token:             { file: ./secrets/internal_token }
+  server_secret:              { file: ./secrets/server_secret }
+  mongo_root_password:        { file: ./secrets/mongo_root_password }
+  mongo_api_password:         { file: ./secrets/mongo_api_password }
+  mongo_authority_password:   { file: ./secrets/mongo_authority_password }

@@ -1,0 +1,725 @@
+{
+  "info": {
+    "_postman_id": "secureshare-fr-2.0.0",
+    "name": "SecureShareFR API",
+    "description": "Complete API collection for SecureShareFR — a zero-knowledge, end-to-end encrypted file sharing platform.\n\n**Setup:**\n1. Import both `SecureShareFR.postman_collection.json` and `SecureShareFR.postman_environment.json`\n2. Select the `SecureShareFR Local` environment\n3. Run the **Health & Meta** folder first to verify connectivity\n4. Run **Auth & Sessions > Register (admin)** to create the admin account\n5. Proceed through the other folders in order\n\n**CSRF:** All state-changing requests include `X-SecureShare-CSRF: 1` via the collection-level pre-request script.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": { "major": 2, "minor": 0, "patch": 0 }
+  },
+  "auth": null,
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Automatically set CSRF header on all state-changing requests",
+          "pm.request.headers.add({ key: 'X-SecureShare-CSRF', value: '1' });"
+        ]
+      }
+    }
+  ],
+  "variable": [],
+  "item": [
+    {
+      "name": "1. Health & Meta",
+      "description": "Service liveness and application metadata.",
+      "item": [
+        {
+          "name": "API Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/health",
+            "description": "Returns 200 when the API service is running."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has status:ok', () => pm.expect(pm.response.json().status).to.equal('ok'));",
+                  "pm.test('No x-powered-by header', () => pm.expect(pm.response.headers.get('x-powered-by')).to.be.null);",
+                  "pm.test('Has HSTS header', () => pm.expect(pm.response.headers.get('strict-transport-security')).to.not.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authority Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/authority/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is authority', () => pm.expect(pm.response.json().service).to.equal('authority'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "API Meta (upload limits)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/meta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has maxUploadBytes', () => pm.expect(json.maxUploadBytes).to.be.a('number'));",
+                  "pm.environment.set('maxUploadBytes', json.maxUploadBytes);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authority Params (FAME public key)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/authority/params"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has publicKey with FAME scheme', () => pm.expect(json.publicKey?.scheme).to.equal('fame-bls12381-v1'));",
+                  "pm.test('Has fingerprint', () => pm.expect(json.fingerprint).to.be.a('string'));",
+                  "pm.environment.set('authorityFingerprint', json.fingerprint);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Integration Status (live checks)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/integrations/status",
+            "description": "Real-time status of all 6 integrations: DB, authority, storage, webhooks, Nginx proxy, HTTPS."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 or 207', () => pm.expect(pm.response.code).to.be.oneOf([200, 207]));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has checks object', () => pm.expect(json.checks).to.be.an('object'));",
+                  "pm.test('Database check present', () => pm.expect(json.checks.database).to.exist);",
+                  "pm.test('Swagger check present', () => pm.expect(json.checks.swagger).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Swagger UI (GET /docs)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/docs",
+            "description": "Should return an HTML page with the Swagger UI."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type is HTML', () => pm.expect(pm.response.headers.get('content-type')).to.include('text/html'));",
+                  "pm.test('Contains swagger-ui', () => pm.expect(pm.response.text()).to.include('swagger-ui'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenAPI JSON Spec",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/openapi.json"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('OpenAPI 3.0.3', () => pm.expect(json.openapi).to.equal('3.0.3'));",
+                  "pm.test('Title is SecureShareFR API', () => pm.expect(json.info.title).to.include('SecureShareFR'));",
+                  "pm.test('Has paths', () => pm.expect(Object.keys(json.paths).length).to.be.greaterThan(5));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Auth & Sessions",
+      "description": "Account registration, login, session management, and security controls.",
+      "item": [
+        {
+          "name": "Get KDF Params (known user)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/params?username={{adminUsername}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "params"],
+              "query": [{ "key": "username", "value": "{{adminUsername}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Algorithm is pbkdf2-sha256', () => pm.expect(json.algorithm).to.equal('pbkdf2-sha256'));",
+                  "pm.test('Iterations >= 600000', () => pm.expect(json.iterations).to.be.at.least(600000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get KDF Params (unknown user – anti-enumeration)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/params?username=nonexistent_user_xyz_abc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "params"],
+              "query": [{ "key": "username", "value": "nonexistent_user_xyz_abc" }]
+            },
+            "description": "Should return structurally valid fake KDF params to prevent account enumeration."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 (enumeration resistance)', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Returns valid KDF structure', () => pm.expect(json.algorithm).to.equal('pbkdf2-sha256'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register (admin) ★",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{adminUsername}}\",\n  \"kdf\": { \"algorithm\": \"pbkdf2-sha256\", \"iterations\": 600000, \"salt\": \"demo-salt-value-123\" },\n  \"authKey\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n  \"encPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"sigPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"vault\": \"demo-encrypted-vault-base64url\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "⚠️ This request uses simplified demo values. In production the browser performs real PBKDF2 key derivation. Use the actual web UI for a real registration.\n\nIf the account already exists this will return 409."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 or 409', () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));",
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  pm.test('Has user object', () => pm.expect(json.user).to.exist);",
+                  "  pm.test('Has role', () => pm.expect(json.user.role).to.be.a('string'));",
+                  "  pm.environment.set('userId', json.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (invalid credentials) ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"username\": \"{{adminUsername}}\", \"authKey\": \"wrong-key-definitely-invalid-aaaaaaa\" }"
+            },
+            "description": "Should return 401. Demonstrates error handling and rate limiting."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401 (invalid credentials)', () => pm.response.to.have.status(401));",
+                  "pm.test('Has error message', () => pm.expect(pm.response.json().error).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (missing CSRF header) ✗",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-SecureShare-CSRF", "value": "", "disabled": true }
+            ],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"username\": \"{{adminUsername}}\", \"authKey\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" }"
+            },
+            "description": "Should return 403. The collection pre-request script normally adds the CSRF header; here it's removed to demonstrate the CSRF protection."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": ["pm.request.headers.remove('X-SecureShare-CSRF');"]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403 (CSRF rejected)', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get My Session (unauthenticated) ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/auth/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401 (not signed in)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Attribute Authority",
+      "description": "FAME CP-ABE public key, attribute catalog, and user key issuance.",
+      "item": [
+        {
+          "name": "Get Authority Params",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/authority/params"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('FAME BLS12-381 scheme', () => pm.expect(pm.response.json().publicKey?.scheme).to.equal('fame-bls12381-v1'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Attribute Catalog",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/authority/catalog",
+            "description": "Lists all attribute names currently assigned to any user."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has attributes array', () => pm.expect(pm.response.json().attributes).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin: List Users (unauthenticated) ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/authority/admin/users",
+            "description": "Should return 401 — demonstrates admin-only protection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401 (unauthorized)', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Files & Encrypted Blobs",
+      "description": "File registration, ciphertext upload, download, policy management, and deletion.",
+      "item": [
+        {
+          "name": "List Files (unauthenticated) ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/files?scope=owned",
+            "description": "Should return 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401 (not signed in)', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Files – missing scope ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/files",
+            "description": "Should return 400 — scope parameter is required."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register File (invalid fileId) ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/files",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"fileId\": \"../traversal-attempt\", \"encMeta\": \"x\", \"abeEnvelope\": {\"policy\":\"role:test\"}, \"ownerEnvelope\": \"x\", \"manifest\": {\"v\":1,\"ownerId\":\"x\",\"ciphertext\":{\"sha256\":\"x\",\"size\":1}}, \"signature\": \"x\" }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Should return 400 or 401 (invalid fileId format)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));",
+                  "pm.test('Has error field', () => pm.expect(pm.response.json().error).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download Non-existent File ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/files/AAAAAAAAAAAAAAAAAAAAAA/blob",
+            "description": "Should return 401 (not signed in) or 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401 or 404', () => pm.expect(pm.response.code).to.be.oneOf([401, 404]));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Webhooks",
+      "description": "Webhook endpoint registration, delivery testing, and log inspection.",
+      "item": [
+        {
+          "name": "List Supported Events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/webhooks/events"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has events array', () => pm.expect(json.events).to.be.an('array'));",
+                  "pm.test('Has file.uploaded event', () => pm.expect(json.events).to.include('file.uploaded'));",
+                  "pm.test('Has auth.login.succeeded', () => pm.expect(json.events).to.include('auth.login.succeeded'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register Webhook Endpoint (unauthenticated) ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/webhooks",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"url\": \"https://webhook.site/test\", \"secret\": \"my-webhook-secret-min-16-chars\", \"events\": [\"file.uploaded\"] }"
+            },
+            "description": "Should return 401 — authentication required."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401 (not signed in)', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register Webhook – SSRF blocked URL ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/webhooks",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"url\": \"http://localhost:27017/evil\", \"secret\": \"my-webhook-secret-min-16-chars\", \"events\": [\"file.uploaded\"] }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Should return 400 (SSRF protection). Localhost/private IPs are blocked."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));",
+                  "if (pm.response.code === 400) {",
+                  "  pm.test('SSRF error message', () => pm.expect(pm.response.json().error).to.include('SSRF'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register Webhook – invalid URL ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/webhooks",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"url\": \"not-a-url\", \"secret\": \"my-webhook-secret-min-16-chars\", \"events\": [\"file.uploaded\"] }"
+            },
+            "description": "Should return 400 (URL validation error) or 401 (unauthenticated)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register Webhook – missing secret ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/webhooks",
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"url\": \"https://webhook.site/test\", \"events\": [\"file.uploaded\"] }"
+            },
+            "description": "Should return 400 (secret required, min 16 chars) or 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Admin & Audit",
+      "description": "Administration endpoints — require the admin role.",
+      "item": [
+        {
+          "name": "List Users (unauthenticated) ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/admin/users",
+            "description": "Should return 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit Log (unauthenticated) ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/admin/audit",
+            "description": "Should return 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unlock Non-existent User (unauthenticated) ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/admin/users/000000000000000000000000/unlock",
+            "body": { "mode": "raw", "raw": "{}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Security & Error Handling",
+      "description": "Demonstrates security controls: input validation, rate limiting, CSRF, authentication.",
+      "item": [
+        {
+          "name": "Invalid JSON body ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": { "mode": "raw", "raw": "{ invalid json }", "options": { "raw": { "language": "text" } } },
+            "description": "Should return 400 (malformed JSON)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 (malformed JSON)', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing required fields ✗",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "description": "Should return 400 (Zod validation failure)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400 (validation error)', () => pm.response.to.have.status(400));",
+                  "pm.test('Has error field', () => pm.expect(pm.response.json().error).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 – Unknown route ✗",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/nonexistent-endpoint-xyz"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": ["pm.test('Status 404', () => pm.response.to.have.status(404));"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
