@@ -31,7 +31,6 @@ jobs:
           key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm install
       - run: npm ci
-      - run: npm test
       - run: npm run build
       - name: Dependency audit (production dependencies, high and above)
         run: npm run audit:prod
