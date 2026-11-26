@@ -260,14 +260,27 @@ export function decapsulate(sk, ast, header) {
     chosen.reduce((acc, i) => acc.add(decG1(sk.k[rows[i].attr][t])), kp[t]),
   );
 
-  const K = bls.pairingBatch([
-    { g1: B[0], g2: c0[0] },
-    { g1: B[1], g2: c0[1] },
-    { g1: B[2], g2: c0[2] },
-    { g1: A[0].negate(), g2: k0[0] },
-    { g1: A[1].negate(), g2: k0[1] },
-    { g1: A[2].negate(), g2: k0[2] },
-  ]);
+  // The pairing implementation rejects points at infinity. Attacker-controlled
+  // headers must produce a DecryptionError, never a raw pairing exception.
+  if (
+    A.some((P) => P.equals(G1.Point.ZERO)) ||
+    k0.some((P) => P.equals(G2.Point.ZERO)) ||
+    B.some((P) => P.equals(G1.Point.ZERO))
+  ) throw new DecryptionError('Malformed ABE header');
+
+  let K;
+  try {
+    K = bls.pairingBatch([
+      { g1: B[0], g2: c0[0] },
+      { g1: B[1], g2: c0[1] },
+      { g1: B[2], g2: c0[2] },
+      { g1: A[0].negate(), g2: k0[0] },
+      { g1: A[1].negate(), g2: k0[1] },
+      { g1: A[2].negate(), g2: k0[2] },
+    ]);
+  } catch {
+    throw new DecryptionError('Malformed ABE header');
+  }
   return Fp12.toBytes(K);
 }
 

@@ -21,7 +21,7 @@ Anyone whose attributes satisfy the policy can decrypt it. Nobody else can, incl
 
 ## Quick start (development)
 
-Needs Node 22.12+ and MongoDB 7 or 8 on `localhost:27017`.
+Needs Node 22.13+ (ESLint 10 requirement) and MongoDB 7 or 8 on `localhost:27017`.
 
 ```bash
 npm ci
@@ -39,13 +39,40 @@ Register a user called `admin` first (the `BOOTSTRAP_ADMIN`); it gets the Admini
 
 ## Production
 
+The default compose stack terminates TLS at **Nginx**. Certificates are mounted from `deploy/nginx/certs/`; generate a self-signed pair for a local trial or install a real certificate before starting:
+
 ```bash
 npm run setup
-cp deploy/.env.example deploy/.env       # set DOMAIN and ACME_EMAIL
+cp deploy/.env.example deploy/.env       # set DOMAIN
+npm run certs                            # local self-signed cert (skipped if one exists)
 docker compose --env-file deploy/.env up -d --build
 ```
 
-Caddy gets a Let's Encrypt certificate for `DOMAIN`. For CI/CD (GHCR images, signed releases, SSH deploys with rollback) see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+For a real domain, replace `deploy/nginx/certs/server.crt` and `server.key` with a CA-issued certificate (e.g. certbot webroot using the ACME challenge path already configured in `deploy/nginx/nginx.conf`). `deploy/caddy/Caddyfile` is included as an alternative automatic-HTTPS proxy if you prefer Caddy's ACME; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for CI/CD (GHCR images, signed releases, SSH deploys with rollback).
+
+## Jenkins (Docker)
+
+A containerized Jenkins controller with a private Docker-in-Docker daemon can build, test, scan and deploy the whole stack end to end:
+
+```bash
+npm run jenkins:up          # or: make jenkins-up
+# open http://localhost:8080, sign in as admin / admin
+# run the pre-created "secureshare-deploy" job
+```
+
+The pipeline copies the mounted read-only source into its own workspace, bootstraps `.env`/secrets/certs if missing, runs `npm ci`, lint, 123 tests, build and prod audit, builds the three images, Trivy-scans them (report-only unless `FAIL_ON_VULNS=true`), starts the HTTPS stack, waits for health checks and runs the 25-check smoke test. It rolls back to the last good tag on failure. The app stack runs inside DinD and is reachable at `https://localhost` on the host. See [deploy/jenkins/README.md](deploy/jenkins/README.md); DinD runs privileged and is intended for a trusted local/dev host.
+
+## Self-running panel demo
+
+With the HTTPS stack up, run one command to show Swagger, Postman guidance, webhooks, HTTPS and Nginx unattended. It drives a real Edge/Chrome window through the Chrome DevTools Protocol (no Playwright install), registers a fresh demo account in the browser, steps through the in-app Integrations tabs, registers a live webhook, sends a signed ping, triggers a real login event, and saves screenshots.
+
+```bash
+npm run demo:panel          # or: make demo-panel
+FAST=1 npm run demo:panel   # shorter pauses
+KEEP_BROWSER=0 npm run demo:panel  # close the browser when done
+```
+
+Screenshots are written to `docs/demo-screenshots/`. Override `BASE_URL`, `DEMO_USER`, `DEMO_PASSWORD`, `WEBHOOK_SECRET`, `WEBHOOK_URL`, `JENKINS_URL`, `CDP_PORT` or `BROWSER_PATH` via environment variables. It auto-detects a webhook.site inbox, so no manual copy/paste is needed.
 
 ## Tests
 
@@ -59,10 +86,15 @@ npm run smoke     # end-to-end over HTTP against running services (25 checks)
 | Suite | Tests | Covers |
 |---|---|---|
 | `packages/crypto` | 63 | policy parser and LSSS (exhaustive over attribute subsets), FAME correctness, unauthorized keys, collusion, wrong authority, envelope binding, tamper detection on every layer, ECIES, signatures, password vault, full upload/download/re-policy flow |
-| `services/authority` | 11 | master key sealing and reload, wrong KEK, key issuance sealed to the device, re-issue after attribute change, admin-only and CSRF, forged tokens, internal endpoint isolation |
-| `services/api` | 26 | registration/login/lockout/logout revocation, enumeration resistance, tampered JWTs, signature and manifest checks, ciphertext hash enforcement, policy gate, revocation, fail-closed, size limits, no plaintext in storage or DB, audit |
-| `client` | 5 | helpers (file name sanitising, policy validation) |
+| `services/authority` | 13 | master key sealing and reload, wrong KEK, key issuance sealed to the device, admin-only and CSRF, forged tokens, internal endpoint isolation |
+| `services/api` | 41 | Swagger UI/OpenAPI, registration/login/lockout/logout revocation, enumeration resistance, tampered JWTs, signature and manifest checks, ciphertext hash enforcement, policy gate, revocation, fail-closed, size limits, audit, SSRF protection, policy gate parity with the crypto parser |
+| `client` | 6 | helpers (file name sanitising, policy validation, policy editor precedence) |
 | `scripts/smoke.mjs` | 25 checks | the whole system over real HTTP |
+
+## API documentation and clients
+
+- **Swagger UI:** `http://localhost:4000/docs` (direct API) or `https://localhost/docs` (Docker stack). Assets are served from the API origin, so the strict CSP still applies — no CDN is involved. The machine-readable document is at `/api/openapi.json`.
+- **Postman:** import [postman/SecureShareFR.postman_collection.json](postman/SecureShareFR.postman_collection.json) with either environment in [`postman/`](postman/README.md). The collection includes a pre-request script that adds the CSRF header automatically. The HTTPS environment targets `https://localhost` with the local self-signed certificate.
 
 ## Documentation
 

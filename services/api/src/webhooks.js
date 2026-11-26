@@ -1,7 +1,43 @@
 import { createHmac, randomBytes } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { WebhookEndpoint, WebhookDelivery } from './models/index.js';
 
-/** SSRF protection: block private / loopback / link-local / reserved ranges */
+/** True for IPv4/IPv6 addresses in ranges that must never be used for webhooks. */
+function isPrivateAddress(raw) {
+  let ip = raw.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1) must be checked as IPv4.
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) ip = mapped[1];
+
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 192 && b === 0) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51) ||
+      (a === 203 && b === 0)
+    );
+  }
+  if (isIP(ip) === 6) {
+    return (
+      ip === '::' || ip === '::1' ||
+      /^f[cd][0-9a-f]{2}:/.test(ip) || // unique local fc00::/7
+      /^fe[89ab][0-9a-f]:/.test(ip)    // link-local fe80::/10
+    );
+  }
+  return true;
+}
+
+/**
+ * SSRF protection: HTTPS only, no private/loopback/link-local literals and no
+ * internal service names. DNS results are checked separately by isSafeWebhookTarget.
+ */
 function isSafeWebhookUrl(rawUrl) {
   let url;
   try {
@@ -9,28 +45,25 @@ function isSafeWebhookUrl(rawUrl) {
   } catch {
     return false;
   }
-  if (!['http:', 'https:'].includes(url.protocol)) return false;
-  const host = url.hostname.toLowerCase();
-  // Block loopback and common private/reserved
-  const blockedPatterns = [
-    /^localhost$/,
-    /^127\./,
-    /^0\.0\.0\.0$/,
-    /^10\./,
-    /^192\.168\./,
-    /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^169\.254\./,           // link-local
-    /^::1$/,                  // IPv6 loopback
-    /^fc00:/i,
-    /^fe80:/i,
-    /^fd[0-9a-f]{2}:/i,
-    /^0+$/,
-    /^internal$/,
-    /^api$/,
-    /^authority$/,
-    /^mongo$/,
-  ];
-  return !blockedPatterns.some((re) => re.test(host));
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return false;
+  if (isIP(host)) return !isPrivateAddress(host);
+  const blockedHosts = new Set(['localhost', 'internal', 'api', 'authority', 'mongo']);
+  return !blockedHosts.has(host) && !host.endsWith('.localhost') && !host.endsWith('.internal');
+}
+
+/** Also reject hostnames that resolve into a private address (basic DNS rebinding guard). */
+export async function isSafeWebhookTarget(rawUrl) {
+  if (!isSafeWebhookUrl(rawUrl)) return false;
+  const host = new URL(rawUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isIP(host)) return !isPrivateAddress(host);
+  try {
+    const addresses = await lookup(host, { all: true });
+    return addresses.length > 0 && addresses.every((a) => !isPrivateAddress(a.address));
+  } catch {
+    return false;
+  }
 }
 
 /** Compute HMAC-SHA256 signature for a webhook payload */
@@ -85,11 +118,13 @@ async function sendWithRetry(deliveryId, url, secret, body, signature, timestamp
 
   let statusCode, responseBody, error;
   try {
+    if (!(await isSafeWebhookTarget(url))) throw new Error('Blocked by SSRF protection at delivery time');
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10000);
     try {
       const res = await fetch(url, {
         method: 'POST',
+        redirect: 'error', // never follow a redirect into a private network
         headers: {
           'Content-Type': 'application/json',
           'X-SecureShare-Signature': `sha256=${signature}`,
@@ -110,7 +145,7 @@ async function sendWithRetry(deliveryId, url, secret, body, signature, timestamp
     error = err.message;
   }
 
-  const success = statusCode && statusCode >= 200 && statusCode < 300;
+  const success = Boolean(statusCode && statusCode >= 200 && statusCode < 300);
   const nextAttempt = attempt + 1;
   const willRetry = !success && nextAttempt <= MAX_ATTEMPTS;
 

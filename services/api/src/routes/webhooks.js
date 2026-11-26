@@ -3,7 +3,7 @@ import { z } from 'zod';
 import mongoose from 'mongoose';
 import { AppError } from '@secureshare/server-common';
 import { WebhookEndpoint, WebhookDelivery } from '../models/index.js';
-import { isSafeWebhookUrl, sign } from '../webhooks.js';
+import { isSafeWebhookTarget, sign } from '../webhooks.js';
 import { randomBytes } from 'node:crypto';
 
 const router = Router();
@@ -28,6 +28,12 @@ const CreateSchema = z.object({
   description: z.string().max(200).optional().default(''),
 });
 
+const PatchSchema = z.object({
+  enabled: z.boolean().optional(),
+  events: z.array(z.enum(SUPPORTED_EVENTS)).min(1).max(20).optional(),
+  description: z.string().max(200).optional(),
+});
+
 // GET /api/webhooks – list endpoints (admin only)
 router.get('/', async (req, res, next) => {
   try {
@@ -46,8 +52,8 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const body = CreateSchema.parse(req.body);
-    if (!isSafeWebhookUrl(body.url)) {
-      return next(new AppError(400, 'Webhook URL is not allowed (blocked by SSRF protection)'));
+    if (!(await isSafeWebhookTarget(body.url))) {
+      return next(new AppError(400, 'Webhook URL must be public HTTPS (blocked by SSRF protection)'));
     }
     const ep = await WebhookEndpoint.create({
       url: body.url,
@@ -76,10 +82,10 @@ router.patch('/:id', async (req, res, next) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return next(new AppError(404, 'Not found'));
     const ep = await WebhookEndpoint.findOne({ _id: req.params.id, createdBy: req.user.id });
     if (!ep) return next(new AppError(404, 'Not found'));
-    const { enabled, events, description } = req.body;
-    if (typeof enabled === 'boolean') ep.enabled = enabled;
-    if (Array.isArray(events)) ep.events = events;
-    if (typeof description === 'string') ep.description = description;
+    const patch = PatchSchema.parse(req.body ?? {});
+    if (patch.enabled !== undefined) ep.enabled = patch.enabled;
+    if (patch.events !== undefined) ep.events = patch.events;
+    if (patch.description !== undefined) ep.description = patch.description;
     await ep.save();
     res.json({ id: ep._id, enabled: ep.enabled, events: ep.events, description: ep.description });
   } catch (err) {
@@ -105,7 +111,7 @@ router.post('/:id/ping', async (req, res, next) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return next(new AppError(404, 'Not found'));
     const ep = await WebhookEndpoint.findOne({ _id: req.params.id, createdBy: req.user.id });
     if (!ep) return next(new AppError(404, 'Not found'));
-    if (!isSafeWebhookUrl(ep.url)) return next(new AppError(400, 'URL blocked by SSRF protection'));
+    if (!(await isSafeWebhookTarget(ep.url))) return next(new AppError(400, 'URL blocked by SSRF protection'));
 
     const eventId = randomBytes(16).toString('hex');
     const timestamp = Math.floor(Date.now() / 1000);
@@ -120,6 +126,7 @@ router.post('/:id/ping', async (req, res, next) => {
       try {
         const r = await fetch(ep.url, {
           method: 'POST',
+          redirect: 'error',
           headers: {
             'Content-Type': 'application/json',
             'X-SecureShare-Signature': `sha256=${signature}`,
@@ -140,7 +147,7 @@ router.post('/:id/ping', async (req, res, next) => {
       error = err.message;
     }
 
-    const success = statusCode && statusCode >= 200 && statusCode < 300;
+    const success = Boolean(statusCode && statusCode >= 200 && statusCode < 300);
     res.json({ success, statusCode, responseBody, error, eventId, payload });
   } catch (err) {
     next(err);
@@ -159,11 +166,6 @@ router.get('/:id/deliveries', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
-
-// GET /api/webhooks/events – list supported event types
-router.get('/events', async (_req, res) => {
-  res.json({ events: SUPPORTED_EVENTS });
 });
 
 export default router;

@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import argon2 from 'argon2';
 import { z } from 'zod';
-import { generateKeyPairSync, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { signJWT } from '../auth-helpers.js';
 import { User, RevokedSession, AuditEvent } from '../models/index.js';
-import { AppError, sessionCookieName, limiter, CSRF_HEADER } from '@secureshare/server-common';
+import { AppError, sessionCookieName, limiter } from '@secureshare/server-common';
 import { dispatchWebhook } from '../webhooks.js';
 
 const router = Router();
+/** Routes that require a verified session (mounted behind requireUser in index.js). */
+export const protectedRouter = Router();
 
 // Rate limiters
 const authLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 20, message: 'Too many auth requests' });
@@ -21,17 +23,17 @@ const ARGON_OPTS = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, para
 
 // ── Validation schemas ────────────────────────────────────────────────────────
 const KdfSchema = z.object({
-  algorithm:  z.literal('pbkdf2-sha256'),
+  alg:        z.literal('pbkdf2-sha256'),
   iterations: z.number().int().min(600000).max(2000000),
   salt:       z.string().min(8),
 });
 
 const RegisterSchema = z.object({
-  username:    z.string().min(3).max(32).regex(/^[A-Za-z0-9_]+$/),
+  username:    z.string().min(3).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9_]*$/),
   kdf:         KdfSchema,
   authKey:     z.string().min(43).max(44),          // base64url 32 bytes
-  encPublicKey: z.record(z.unknown()),
-  sigPublicKey: z.record(z.unknown()),
+  encPublicKey: z.record(z.string(), z.unknown()),
+  sigPublicKey: z.record(z.string(), z.unknown()),
   vault:        z.string().min(1).max(8192),
 });
 
@@ -43,7 +45,7 @@ const LoginSchema = z.object({
 // Fake KDF params (identical structure for unknown users – enumeration resistance)
 function fakeKdf(username, serverSecret) {
   const mac = createHmac('sha256', serverSecret).update(`fake-kdf|${username}`).digest('base64url');
-  return { algorithm: 'pbkdf2-sha256', iterations: 600000, salt: mac.slice(0, 22) };
+  return { alg: 'pbkdf2-sha256', iterations: 600000, salt: mac.slice(0, 22) };
 }
 
 function cookieOpts(env) {
@@ -80,7 +82,7 @@ router.post('/register', registerLimiter, async (req, res, next) => {
       username, kdf: body.kdf, authHash, role,
       encPublicKey: body.encPublicKey, sigPublicKey: body.sigPublicKey, vault: body.vault,
     });
-    const { token, jti, exp } = await signJWT(user, req.app.locals);
+    const { token } = await signJWT(user, req.app.locals);
     const cookieName = sessionCookieName(req.app.locals.cookieSecure);
     res.cookie(cookieName, token, cookieOpts({ COOKIE_SECURE: req.app.locals.cookieSecure ? 'true' : 'false' }));
     await audit('auth.registered', { username, userId: user.id });
@@ -138,7 +140,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
     user.lockUntil = null;
     await user.save();
 
-    const { token, jti, exp } = await signJWT(user, req.app.locals);
+    const { token } = await signJWT(user, req.app.locals);
     const cookieName = sessionCookieName(req.app.locals.cookieSecure);
     res.cookie(cookieName, token, cookieOpts({ COOKIE_SECURE: req.app.locals.cookieSecure ? 'true' : 'false' }));
     await audit('auth.login.succeeded', { username, userId: user.id });
@@ -153,7 +155,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
 });
 
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
-router.post('/logout', async (req, res, next) => {
+protectedRouter.post('/logout', async (req, res, next) => {
   try {
     const session = req.session;
     if (session?.jti && session?.exp) {
@@ -168,7 +170,7 @@ router.post('/logout', async (req, res, next) => {
 });
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
-router.get('/me', async (req, res, next) => {
+protectedRouter.get('/me', async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id).select('-authHash').lean();
     if (!user) return next(new AppError(401, 'Not signed in'));

@@ -1,6 +1,4 @@
 import { SignJWT } from 'jose';
-import { readFileSync } from 'node:fs';
-import { importPKCS8 } from 'jose';
 import { randomBytes } from 'node:crypto';
 import { JWT_ISSUER, JWT_AUDIENCE } from '@secureshare/server-common';
 

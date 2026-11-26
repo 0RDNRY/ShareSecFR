@@ -12,10 +12,13 @@ export function checkPolicy(text) {
   }
 }
 
-function append(text, piece, op) {
+export function append(text, piece, op) {
   const t = text.trim();
   if (!t) return piece;
-  return op === 'OR' ? `(${t}) OR ${piece}` : `${t} AND ${piece}`;
+  // AND binds tighter than OR, so an existing OR must be parenthesised or access silently widens.
+  const needsParens = /\bOR\b|\|\|/i.test(t);
+  const left = op === 'OR' || needsParens ? `(${t})` : t;
+  return `${left} ${op} ${piece}`;
 }
 
 export default function PolicyEditor({ value, onChange, id = 'policy' }) {

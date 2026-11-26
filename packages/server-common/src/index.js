@@ -25,7 +25,7 @@ export function readSecret(env, name, { required = true } = {}) {
 export function mongoUri(uri, password) {
   if (!password) return uri;
   const u = new URL(uri);
-  u.password = encodeURIComponent(password);
+  u.password = password; // URL's password setter already percent-encodes
   return u.toString();
 }
 
@@ -88,7 +88,7 @@ export const errorHandler = (logger) => (err, req, res, _next) => {
   }
   if (err instanceof AppError) return res.status(err.status).json({ error: err.message, ...(err.code && { code: err.code }) });
   if (err?.name === 'PolicyError') return res.status(400).json({ error: err.message });
-  if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
+  if (err?.type === 'entity.too.large' || err?.status === 413) return res.status(413).json({ error: 'Request body too large' });
   if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Malformed JSON' });
   if (err?.code === 11000) return res.status(409).json({ error: 'Already exists' });
   (req.log ?? logger).error({ err }, 'unhandled error');
@@ -156,6 +156,7 @@ export function safeEqual(a, b) {
 
 /** Service-to-service bearer token check (constant time). */
 export function requireInternalToken(token) {
+  if (!token || typeof token !== 'string') throw new Error('Internal token required');
   return (req, _res, next) => {
     const header = req.get('authorization') ?? '';
     const presented = header.startsWith('Bearer ') ? header.slice(7) : '';

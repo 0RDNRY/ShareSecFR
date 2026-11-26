@@ -12,10 +12,14 @@
     "client"
   ],
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.13"
   },
   "scripts": {
     "setup": "node scripts/gen-secrets.mjs",
+    "certs": "sh deploy/nginx/gen-local-cert.sh",
+    "jenkins:up": "docker compose -f deploy/jenkins/docker-compose.yml up -d --build",
+    "jenkins:down": "docker compose -f deploy/jenkins/docker-compose.yml down",
+    "jenkins:logs": "docker compose -f deploy/jenkins/docker-compose.yml logs -f",
     "dev": "concurrently -k -n authority,api,client -c magenta,blue,green \"npm:dev:authority\" \"npm:dev:api\" \"npm:dev:client\"",
     "dev:authority": "node --env-file=.env --watch services/authority/src/index.js",
     "dev:api": "node --env-file=.env --watch services/api/src/index.js",
@@ -28,7 +32,9 @@
     "test:api": "npm test -w services/api",
     "test:client": "npm test -w client",
     "smoke": "node scripts/smoke.mjs",
-    "audit:prod": "npm audit --omit=dev --audit-level=high"
+    "demo:panel": "node scripts/panel-demo.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "verify": "npm run lint && npm test && npm run build && npm run audit:prod"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

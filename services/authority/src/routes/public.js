@@ -30,8 +30,11 @@ router.get('/catalog', async (_req, res, next) => {
   }
 });
 
+// Routes below require a verified session (mounted behind requireUser in index.js).
+export const protectedRouter = Router();
+
 // ── GET /authority/me – current user's attributes ─────────────────────────────
-router.get('/me', async (req, res, next) => {
+protectedRouter.get('/me', async (req, res, next) => {
   try {
     const rec = await UserAttr.findOne({ userId: req.user.id }).lean();
     res.json({
@@ -44,15 +47,16 @@ router.get('/me', async (req, res, next) => {
 });
 
 // ── GET /authority/keys/me – sealed CP-ABE key ────────────────────────────────
-router.get('/keys/me', keyLimiter, async (req, res, next) => {
+protectedRouter.get('/keys/me', keyLimiter, async (req, res, next) => {
   try {
-    const { pk, msk } = req.app.locals.abeState;
+    const { msk } = req.app.locals.abeState;
     let rec = await UserAttr.findOne({ userId: req.user.id });
     if (!rec) {
       rec = await UserAttr.create({ userId: req.user.id, username: req.user.username, attributes: [], version: 0 });
     }
 
-    const userAttributes = [...(rec.attributes ?? []), `user:${req.user.username}`];
+    // CP-ABE policy attributes are lower-cased; keys must use the same form.
+    const userAttributes = [...(rec.attributes ?? []).map((a) => a.toLowerCase()), `user:${req.user.username.toLowerCase()}`];
     const version = rec.version ?? 0;
 
     // Use cached sealed key if version matches
@@ -66,7 +70,7 @@ router.get('/keys/me', keyLimiter, async (req, res, next) => {
     }
 
     // Generate and seal a new key
-    const sk = abe.keyGen(pk, msk, userAttributes);
+    const sk = abe.fame.keygen(msk, userAttributes);
     const encPublicJwk = req.session?.ek;
     if (!encPublicJwk) return next(new AppError(400, 'No ECDH key in session'));
 

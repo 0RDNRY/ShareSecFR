@@ -42,7 +42,7 @@ export default function AuthPage({ onSession }) {
         <form onSubmit={submit} className="stack">
           <label>
             Username
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} pattern="[A-Za-z0-9_]+" />
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9_]*" />
           </label>
           <label>
             Password

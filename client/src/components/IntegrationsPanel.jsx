@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
 
 const STATUS_LABEL = { ok: '✅ Operational', warn: '⚠️ Warning', error: '❌ Error', loading: '⏳ Checking...' };
@@ -39,8 +39,7 @@ function StatusRow({ label, check }) {
   );
 }
 
-export default function IntegrationsPanel({ session }) {
-  const isAdmin = session?.user?.role === 'admin';
+export default function IntegrationsPanel() {
   const [status, setStatus] = useState(null);
   const [demoData, setDemoData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -70,7 +69,10 @@ export default function IntegrationsPanel({ session }) {
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    const id = setTimeout(() => { refresh(); }, 0);
+    return () => clearTimeout(id);
+  }, [refresh]);
 
   async function registerWebhook(e) {
     e.preventDefault();

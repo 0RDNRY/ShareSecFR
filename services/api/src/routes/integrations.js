@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { WebhookEndpoint, WebhookDelivery } from '../models/index.js';
-import { AppError } from '@secureshare/server-common';
 import mongoose from 'mongoose';
 
 const router = Router();
@@ -14,7 +13,7 @@ router.get('/status', async (req, res) => {
     await mongoose.connection.db.admin().ping();
     checks.database = { status: 'ok', message: 'MongoDB connected' };
   } catch (err) {
-    checks.database = { status: 'error', message: err.message };
+    checks.database = { status: 'error', message: 'MongoDB unreachable' };
   }
 
   // 2. Authority connectivity (internal)
@@ -29,13 +28,14 @@ router.get('/status', async (req, res) => {
 
   // 3. File storage
   try {
-    const { mkdirSync, writeFileSync, unlinkSync } = await import('node:fs');
-    const testPath = `${req.app.locals.storageDir}/.health-${Date.now()}`;
+    const { writeFileSync, unlinkSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const testPath = join(req.app.locals.storageDir, `.health-${Date.now()}`);
     writeFileSync(testPath, 'ok');
     unlinkSync(testPath);
-    checks.fileStorage = { status: 'ok', message: `Storage writable: ${req.app.locals.storageDir}` };
+    checks.fileStorage = { status: 'ok', message: 'File storage writable' };
   } catch (err) {
-    checks.fileStorage = { status: 'error', message: err.message };
+    checks.fileStorage = { status: 'error', message: 'File storage not writable' };
   }
 
   // 4. Webhook system
@@ -48,21 +48,21 @@ router.get('/status', async (req, res) => {
       lastDeliveryStatus: recent?.status ?? 'none',
     };
   } catch (err) {
-    checks.webhooks = { status: 'error', message: err.message };
+    checks.webhooks = { status: 'error', message: 'Webhook store unavailable' };
   }
 
-  // 5. Swagger docs
-  checks.swagger = { status: 'ok', message: 'OpenAPI spec available at /api/openapi.json', docsUrl: '/docs' };
+  // 5. Swagger docs (reflect the real state instead of hard-coding success)
+  checks.swagger = req.app.locals.swaggerEnabled
+    ? { status: 'ok', message: 'OpenAPI spec available at /api/openapi.json', docsUrl: '/docs' }
+    : { status: 'error', message: 'Swagger UI assets missing — run npm install' };
 
-  // 6. HTTPS / proxy detection
+  // 6. HTTPS / proxy detection (no client IPs or internal paths exposed)
   const proto = req.headers['x-forwarded-proto'] ?? req.protocol;
   const via = req.headers['x-real-ip'] || req.headers['x-forwarded-for'];
   checks.nginx = {
     status: via ? 'ok' : 'warn',
-    message: via ? `Proxied through Nginx (client IP: ${via})` : 'Direct connection (no proxy headers detected)',
+    message: via ? 'Proxied through a TLS reverse proxy' : 'Direct connection (no proxy headers detected)',
     protocol: proto,
-    xForwardedFor: req.headers['x-forwarded-for'] ?? null,
-    xRealIp: req.headers['x-real-ip'] ?? null,
   };
 
   checks.https = {
@@ -118,12 +118,13 @@ router.get('/demo/data', async (_req, res) => {
       { method: 'DELETE', path: '/api/files/:id', auth: true, description: 'Delete file' },
       { method: 'GET', path: '/api/admin/users', auth: 'admin', description: 'List users (admin)' },
       { method: 'GET', path: '/api/admin/audit', auth: 'admin', description: 'Audit log (admin)' },
-      { method: 'GET', path: '/api/webhooks/events', auth: true, description: 'Supported webhook events' },
+      { method: 'GET', path: '/api/webhooks/events', auth: false, description: 'Supported webhook events' },
       { method: 'POST', path: '/api/webhooks', auth: true, description: 'Register webhook endpoint' },
       { method: 'POST', path: '/api/webhooks/:id/ping', auth: true, description: 'Test webhook delivery' },
       { method: 'GET', path: '/api/webhooks/:id/deliveries', auth: true, description: 'Delivery log' },
       { method: 'GET', path: '/api/integrations/status', auth: false, description: 'Live integration status' },
-      { method: 'GET', path: '/docs', auth: false, description: 'Swagger UI' },
+      { method: 'GET', path: '/api/openapi.json', auth: false, description: 'OpenAPI document' },
+      { method: 'GET', path: '/docs', auth: false, description: 'Swagger UI (self-hosted)' },
     ],
   });
 });

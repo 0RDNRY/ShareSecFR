@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { randomBytes } from 'node:crypto';
 
 // ── User ─────────────────────────────────────────────────────────────────────
 const userSchema = new mongoose.Schema(
@@ -17,7 +16,6 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
-userSchema.index({ username: 1 });
 export const User = mongoose.model('User', userSchema);
 
 // ── Session deny-list (logout revocation) ────────────────────────────────────

@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { File, AuditEvent } from '../models/index.js';
-import { writeBlob, readBlobStream, deleteBlob, blobStat } from '../storage.js';
+import { writeBlob, readBlobStream, deleteBlob } from '../storage.js';
 import { AppError, limiter } from '@secureshare/server-common';
 import { dispatchWebhook } from '../webhooks.js';
+import { policy as policyLib } from '@secureshare/crypto';
+import { satisfiesPolicy } from '../policy-gate.js';
+import { pipeline } from 'node:stream/promises';
 
 const router = Router();
 
@@ -31,55 +32,6 @@ async function getUserAttributes(userId, authorityUrl, internalToken) {
   return (await r.json()).attributes ?? [];
 }
 
-function satisfiesPolicy(policy, attributes) {
-  // Simple attribute-set check: parse conjunctions/disjunctions
-  // The authority verifies cryptographic compliance; this is the server gate
-  try {
-    const attrSet = new Set(attributes.map((a) => a.toLowerCase()));
-    function evalNode(node) {
-      if (typeof node === 'string') return attrSet.has(node.toLowerCase());
-      if (node.op === 'AND') return node.children.every(evalNode);
-      if (node.op === 'OR') return node.children.some(evalNode);
-      return false;
-    }
-    // Tokenise and parse the policy string (simple recursive descent)
-    const result = parsePolicy(policy.trim(), attrSet);
-    return result;
-  } catch {
-    return false; // fail closed
-  }
-}
-
-function parsePolicy(policy, attrSet) {
-  // Simple evaluator for "A AND B OR C" style policies
-  // Uses canonical policy from crypto package format
-  const tokens = policy.match(/[A-Za-z0-9_:]+|AND|OR|\(|\)/g) || [];
-  let pos = 0;
-  function peek() { return tokens[pos]; }
-  function consume() { return tokens[pos++]; }
-  function parseOr() {
-    let left = parseAnd();
-    while (peek() === 'OR') { consume(); left = left || parseAnd(); }
-    return left;
-  }
-  function parseAnd() {
-    let left = parseAtom();
-    while (peek() === 'AND') { consume(); left = left && parseAtom(); }
-    return left;
-  }
-  function parseAtom() {
-    if (peek() === '(') {
-      consume();
-      const v = parseOr();
-      consume(); // ')'
-      return v;
-    }
-    const attr = consume();
-    return attrSet.has(attr.toLowerCase());
-  }
-  return parseOr();
-}
-
 // ── POST /api/files – register file (signed manifest) ────────────────────────
 router.post('/', uploadLimiter, async (req, res, next) => {
   try {
@@ -98,10 +50,10 @@ router.post('/', uploadLimiter, async (req, res, next) => {
     if (!ct?.size || !ct?.sha256) return next(new AppError(400, 'Manifest missing ciphertext hash'));
 
     const policy = abeEnvelope?.policy ?? '';
-    if (!policy) return next(new AppError(400, 'Missing ABE policy'));
+    if (!policy || typeof policy !== 'string') return next(new AppError(400, 'Missing ABE policy'));
+    policyLib.parsePolicy(policy); // throws PolicyError -> 400
 
     // Placeholder blob record (blob uploaded separately)
-    const blobName = fileId + '-pending';
     const file = new File({
       _id: fileId,
       ownerId: req.user.id,
@@ -217,7 +169,7 @@ router.get('/:id', async (req, res, next) => {
       ).catch(() => []);
       const ok = satisfiesPolicy(file.policy, [...userAttrs, `user:${req.user.username}`]);
       if (!ok) {
-        await audit('file.access.denied', { username: req.user.username, userId: req.user.id, target: id, outcome: 'denied' });
+        await audit('file.access', { username: req.user.username, userId: req.user.id, target: id, outcome: 'denied' });
         await dispatchWebhook('file.access.denied', { actorId: req.user.id, username: req.user.username, fileId: id, policy: file.policy });
         return next(new AppError(404, 'Not found'));
       }
@@ -249,7 +201,8 @@ router.get('/:id/blob', async (req, res, next) => {
       ).catch(() => []);
       const ok = satisfiesPolicy(file.policy, [...userAttrs, `user:${req.user.username}`]);
       if (!ok) {
-        await audit('file.access.denied', { username: req.user.username, userId: req.user.id, target: id, outcome: 'denied' });
+        await audit('file.access', { username: req.user.username, userId: req.user.id, target: id, outcome: 'denied' });
+        await dispatchWebhook('file.access.denied', { actorId: req.user.id, username: req.user.username, fileId: id, policy: file.policy });
         return next(new AppError(404, 'Not found'));
       }
     }
@@ -262,7 +215,7 @@ router.get('/:id/blob', async (req, res, next) => {
       'Content-Length': String(file.size),
       'Content-Disposition': 'attachment',
     });
-    readBlobStream(file.blobName).pipe(res);
+    await pipeline(readBlobStream(file.blobName), res);
   } catch (err) {
     next(err);
   }
@@ -277,6 +230,9 @@ router.put('/:id/policy', async (req, res, next) => {
 
     const { abeEnvelope, manifest, signature } = req.body ?? {};
     if (!abeEnvelope || !manifest || !signature) return next(new AppError(400, 'Missing fields'));
+
+    if (typeof abeEnvelope.policy !== 'string') return next(new AppError(400, 'Missing ABE policy'));
+    policyLib.parsePolicy(abeEnvelope.policy); // throws PolicyError -> 400
 
     const oldPolicy = file.policy;
     file.abeEnvelope = abeEnvelope;

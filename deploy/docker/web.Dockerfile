@@ -28,6 +28,6 @@ RUN mkdir -p /etc/nginx/certs
 
 EXPOSE 80 443
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:80/ > /dev/null 2>&1 || exit 1
+  CMD wget -qO- --no-check-certificate https://127.0.0.1:443/api/health > /dev/null 2>&1 || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

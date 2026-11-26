@@ -1,3 +1,4 @@
+/* global db */
 // Runs once when the MongoDB volume is first initialised (mongosh).
 // Each service gets its own user that can only touch its own database.
 const fs = require('fs');

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { UserAttr } from '../models/index.js';
-import { AppError } from '@secureshare/server-common';
 
 const router = Router();
 

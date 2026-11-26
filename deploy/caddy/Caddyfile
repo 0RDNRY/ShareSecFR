@@ -37,6 +37,11 @@
 		reverse_proxy authority:7000
 	}
 
+	# Self-hosted Swagger UI and its static assets (no CDN, CSP comes from the API)
+	handle /docs* {
+		reverse_proxy api:4000
+	}
+
 	handle {
 		# The web app: no inline script, no eval, no third-party origins.
 		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"

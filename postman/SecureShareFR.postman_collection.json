@@ -19,7 +19,10 @@
       }
     }
   ],
-  "variable": [],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000", "type": "string" },
+    { "key": "authorityUrl", "value": "http://localhost:7000", "type": "string" }
+  ],
   "item": [
     {
       "name": "1. Health & Meta",
@@ -52,7 +55,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/authority/health"
+            "url": "{{authorityUrl}}/authority/health"
           },
           "event": [
             {
@@ -92,7 +95,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/authority/params"
+            "url": "{{authorityUrl}}/authority/params"
           },
           "event": [
             {
@@ -147,7 +150,8 @@
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
                   "pm.test('Content-Type is HTML', () => pm.expect(pm.response.headers.get('content-type')).to.include('text/html'));",
-                  "pm.test('Contains swagger-ui', () => pm.expect(pm.response.text()).to.include('swagger-ui'));"
+                  "pm.test('Contains swagger-ui', () => pm.expect(pm.response.text()).to.include('swagger-ui'));",
+                  "pm.test('Assets are self-hosted (no CDN)', () => pm.expect(pm.response.text()).to.not.include('unpkg.com'));"
                 ]
               }
             }
@@ -170,6 +174,25 @@
                   "pm.test('OpenAPI 3.0.3', () => pm.expect(json.openapi).to.equal('3.0.3'));",
                   "pm.test('Title is SecureShareFR API', () => pm.expect(json.info.title).to.include('SecureShareFR'));",
                   "pm.test('Has paths', () => pm.expect(Object.keys(json.paths).length).to.be.greaterThan(5));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Swagger UI assets (self-hosted)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/docs/assets/swagger-ui.css"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Served from this origin', () => pm.expect(pm.response.headers.get('content-type')).to.include('text/css'));"
                 ]
               }
             }
@@ -200,7 +223,7 @@
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
                   "const json = pm.response.json();",
-                  "pm.test('Algorithm is pbkdf2-sha256', () => pm.expect(json.algorithm).to.equal('pbkdf2-sha256'));",
+                  "pm.test('Algorithm is pbkdf2-sha256', () => pm.expect(json.alg).to.equal('pbkdf2-sha256'));",
                   "pm.test('Iterations >= 600000', () => pm.expect(json.iterations).to.be.at.least(600000));"
                 ]
               }
@@ -227,7 +250,7 @@
                 "exec": [
                   "pm.test('Status 200 (enumeration resistance)', () => pm.response.to.have.status(200));",
                   "const json = pm.response.json();",
-                  "pm.test('Returns valid KDF structure', () => pm.expect(json.algorithm).to.equal('pbkdf2-sha256'));"
+                  "pm.test('Returns valid KDF structure', () => pm.expect(json.alg).to.equal('pbkdf2-sha256'));"
                 ]
               }
             }
@@ -241,7 +264,7 @@
             "url": "{{baseUrl}}/api/auth/register",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"{{adminUsername}}\",\n  \"kdf\": { \"algorithm\": \"pbkdf2-sha256\", \"iterations\": 600000, \"salt\": \"demo-salt-value-123\" },\n  \"authKey\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n  \"encPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"sigPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"vault\": \"demo-encrypted-vault-base64url\"\n}",
+              "raw": "{\n  \"username\": \"{{adminUsername}}\",\n  \"kdf\": { \"alg\": \"pbkdf2-sha256\", \"iterations\": 600000, \"salt\": \"demo-salt-value-123\" },\n  \"authKey\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n  \"encPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"sigPublicKey\": { \"kty\": \"EC\", \"crv\": \"P-256\", \"x\": \"demo\", \"y\": \"demo\", \"key_ops\": [] },\n  \"vault\": \"demo-encrypted-vault-base64url\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "description": "⚠️ This request uses simplified demo values. In production the browser performs real PBKDF2 key derivation. Use the actual web UI for a real registration.\n\nIf the account already exists this will return 409."
@@ -348,7 +371,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/authority/params"
+            "url": "{{authorityUrl}}/authority/params"
           },
           "event": [
             {
@@ -367,7 +390,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/authority/catalog",
+            "url": "{{authorityUrl}}/authority/catalog",
             "description": "Lists all attribute names currently assigned to any user."
           },
           "event": [
@@ -387,7 +410,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/authority/admin/users",
+            "url": "{{authorityUrl}}/authority/admin/users",
             "description": "Should return 401 — demonstrates admin-only protection."
           },
           "event": [

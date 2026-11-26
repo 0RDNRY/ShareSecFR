@@ -13,8 +13,7 @@ COPY services/api/package.json services/api/
 COPY services/authority/package.json services/authority/
 COPY client/package.json client/
 RUN test -n "$SERVICE" \
- && npm ci --omit=dev --workspace "services/${SERVICE}" --no-audit --no-fund \
- && npm cache clean --force
+ && npm ci --omit=dev --workspace "services/${SERVICE}" --no-audit --no-fund
 
 FROM ${NODE_IMAGE} AS runtime
 ARG SERVICE

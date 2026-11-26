@@ -1,13 +1,18 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { policy as policyLib } from '@secureshare/crypto';
 import { UserAttr, AuthorityAudit } from '../models/index.js';
-import { AppError } from '@secureshare/server-common';
 
 const router = Router();
 
 const AttributeUpdateSchema = z.object({
   username:   z.string().min(1).max(32),
-  attributes: z.array(z.string().min(1).max(100).regex(/^[a-z0-9_]+:[a-z0-9_.@-]+$/i)).max(50),
+  // Same grammar as the policy language (packages/crypto), so every assignable attribute is usable in a policy.
+  attributes: z.array(
+    z.string().min(1).max(100).refine((a) => policyLib.ATTRIBUTE_RE.test(a.trim().toLowerCase()), {
+      message: 'Invalid attribute (expected key:value using letters, digits, _ - . @)',
+    }),
+  ).max(50),
 });
 
 // GET /authority/admin/users
@@ -29,8 +34,9 @@ router.get('/users', async (_req, res, next) => {
 router.put('/users/:userId/attributes', async (req, res, next) => {
   try {
     const body = AttributeUpdateSchema.parse(req.body);
-    // Prevent assigning user: attributes via admin (they're auto-added per FAME design)
-    const userAttrs = body.attributes.filter((a) => !a.startsWith('user:'));
+    // Prevent assigning user: attributes via admin (they're auto-added per FAME design).
+    // Normalise to lower case so the stored attributes hash identically to policy attributes.
+    const userAttrs = body.attributes.map((a) => a.trim().toLowerCase()).filter((a) => !a.startsWith('user:'));
 
     let rec = await UserAttr.findOne({ userId: req.params.userId });
     if (!rec) {

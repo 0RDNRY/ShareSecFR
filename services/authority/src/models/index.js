@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { randomBytes } from 'node:crypto';
 
 // ── User attribute record ─────────────────────────────────────────────────────
 const userAttrSchema = new mongoose.Schema(

@@ -4,8 +4,8 @@
                        Internet (HTTPS only)
                               │
                      ┌────────▼─────────┐
-                     │  web (Caddy)     │  TLS, security headers, static React app
-                     │  :80 :443        │  /api/* -> api, /authority/* -> authority
+                     │  web (Nginx)     │  TLS, security headers, static React app
+                     │  :80 :443        │  /api/*, /authority/*, /docs -> services
                      └───┬──────────┬───┘
             frontend net │          │
              ┌───────────▼──┐   ┌───▼──────────────┐
@@ -34,7 +34,9 @@ packages/server-common  Config/secrets loading, logging, error handling, helmet,
 services/api            Express 5 + Mongoose. Auth, files, policy gate, admin, audit.
 services/authority      Express 5 + Mongoose. Master key, attribute admin, key issuance.
 client                  React 19 + Vite.
-deploy/                 Dockerfiles, Caddyfile, MongoDB init script, compose env template.
+deploy/                 Dockerfiles, Nginx config (+ local cert generator), optional Caddyfile,
+                        MongoDB init script, compose env template.
+postman/                Collection and environments for local HTTP and Docker HTTPS.
 scripts/                gen-secrets, smoke test, remote deploy script.
 .github/                CI, release, deploy, CodeQL, Dependabot.
 docs/                   This folder.
