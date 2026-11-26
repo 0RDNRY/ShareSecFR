@@ -1,0 +1,71 @@
+# Run Jenkins in Docker with a Docker-in-Docker daemon, then use it to deploy
+# the SecureShareFR stack. The DinD daemon shares the Jenkins home volume at the
+# same absolute path, so bind mounts in docker-compose.yml resolve correctly.
+#
+#   docker compose -f deploy/jenkins/docker-compose.yml up -d --build
+#
+# Open http://localhost:8080 and sign in as admin / JENKINS_ADMIN_PASSWORD.
+# The "secureshare-deploy" job is created automatically by Configuration as Code.
+# HTTPS app endpoints are reachable on the host at https://localhost.
+
+name: secureshare-jenkins
+
+services:
+  dind:
+    image: docker:27-dind
+    container_name: secureshare-dind
+    # docker:dind issues TLS certs for this hostname; Jenkins connects via tcp://docker:2376.
+    hostname: docker
+    privileged: true
+    restart: unless-stopped
+    networks:
+      default:
+        # `hostname:` is NOT resolvable by other containers. Without this alias Jenkins cannot reach
+        # tcp://docker:2376 and the smoke test cannot reach https://docker.
+        aliases: [docker]
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      # Shared with Jenkins so bind-mounted secrets resolve inside the daemon.
+      - jenkins_home:/var/jenkins_home
+      - dind_certs:/certs
+      - dind_data:/var/lib/docker
+    ports:
+      # Inner app stack publishes these ports on the dind container.
+      - "80:80"
+      - "443:443"
+
+  jenkins:
+    build:
+      context: ../..
+      dockerfile: deploy/jenkins/Dockerfile
+    image: secureshare-jenkins:local
+    container_name: secureshare-jenkins
+    restart: unless-stopped
+    depends_on:
+      - dind
+    # Root avoids UID mismatches on Windows/Docker Desktop bind mounts.
+    user: "0:0"
+    ports:
+      # Loopback only: the default password is admin/admin. Remove "127.0.0.1:" to expose it on your network
+      # (set JENKINS_ADMIN_PASSWORD first). Port 50000 (inbound agents) is not needed: builds run on the controller.
+      - "127.0.0.1:8080:8080"
+    environment:
+      CASC_JENKINS_CONFIG: /var/jenkins_home/casc.yaml
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-admin}
+      DOCKER_HOST: tcp://docker:2376
+      DOCKER_TLS_VERIFY: 1
+      DOCKER_CERT_PATH: /certs/client
+      COMPOSE_PROJECT_NAME: secureshare
+      TZ: UTC
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - dind_certs:/certs:ro
+      # Source tree is read-only; the pipeline copies it into its own workspace.
+      - ../../:/workspace:ro
+
+volumes:
+  jenkins_home:
+  dind_certs:
+  dind_data:

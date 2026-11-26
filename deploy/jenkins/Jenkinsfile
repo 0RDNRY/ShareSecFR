@@ -1,0 +1,292 @@
+// SecureShareFR CI/CD pipeline (declarative).
+//
+//  Source ──► Verify (lint, tests + JUnit, build, audit) ──► Images ──► Trivy ──► Deploy ──► Smoke ──► rollback on failure
+//
+// Two ways to run it:
+//   * Local (default): the job created by Configuration as Code copies the read-only source mounted at /workspace.
+//   * Real CI: create a Multibranch Pipeline job pointing at your Git repo with script path
+//     deploy/jenkins/Jenkinsfile. BRANCH_NAME is then set and the pipeline uses `checkout scm`.
+//     Pull-request / feature branches run the CI stages only; set DEPLOY=true on a branch build to deploy it.
+pipeline {
+  agent any
+
+  options {
+    timeout(time: 60, unit: 'MINUTES')
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '15'))
+    disableConcurrentBuilds()
+    skipDefaultCheckout()
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Run npm ci, lint, tests, build before building images')
+    booleanParam(name: 'RUN_AUDIT', defaultValue: true, description: 'Run npm audit for production dependencies')
+    booleanParam(name: 'AUDIT_FAILS_BUILD', defaultValue: true, description: 'Fail the build on HIGH/CRITICAL advisories (otherwise mark the build UNSTABLE)')
+    booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy the stack after the images are built and scanned (untick for CI-only runs)')
+    booleanParam(name: 'RUN_SMOKE', defaultValue: true, description: 'Run the end-to-end smoke test after deployment')
+    booleanParam(name: 'FAIL_ON_VULNS', defaultValue: false, description: 'Fail the build when Trivy reports HIGH/CRITICAL vulnerabilities (report-only by default)')
+    string(name: 'DEPLOY_TAG', defaultValue: '', description: 'Optional image tag; leave blank for jenkins-$BUILD_NUMBER')
+  }
+
+  environment {
+    CI = 'true'                                   // vitest writes JUnit XML when CI is set
+    SOURCE_DIR = '/workspace'
+    APP_DIR = 'app'
+    IMAGE_PREFIX = 'secureshare'
+    DEPLOY_ENV = 'deploy/.env'
+    STATE_DIR = '/var/jenkins_home'
+    PERSIST_DIR = '/var/jenkins_home/secureshare-state'   // secrets, TLS cert and deploy/.env survive between builds
+    npm_config_cache = '/var/jenkins_home/.npm'
+    npm_config_update_notifier = 'false'
+    MONGOMS_DOWNLOAD_DIR = '/var/jenkins_home/.cache/mongodb-binaries'   // mongodb-memory-server binary cache
+    TRIVY_CACHE_DIR = '/var/jenkins_home/.cache/trivy'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        script {
+          sh '''
+            set -eu
+            # The DinD daemon needs a few seconds before its TLS certificates exist.
+            ok=0
+            for i in $(seq 1 30); do
+              if docker info >/dev/null 2>&1; then ok=1; break; fi
+              sleep 2
+            done
+            test "$ok" = 1 || { echo "Docker daemon not reachable at $DOCKER_HOST"; exit 1; }
+            docker info --format 'Docker daemon: {{.ServerVersion}}'
+            rm -rf "$APP_DIR"
+            mkdir -p "$APP_DIR"
+          '''
+          if (env.BRANCH_NAME || env.CHANGE_ID) {
+            dir(env.APP_DIR) { checkout scm }
+          } else {
+            sh '''
+              set -eu
+              tar -C "$SOURCE_DIR" -cf - --exclude=node_modules --exclude=dist --exclude=test-results . | tar -C "$APP_DIR" -xf -
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Bootstrap secrets and TLS') {
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            mkdir -p "$PERSIST_DIR"
+
+            # --- secrets: generated once and then reused. Regenerating them on every build would
+            #     make the existing MongoDB volume (old passwords) and the sealed ABE master key
+            #     (old KEK) unusable on the second deployment.
+            if [ -d "$PERSIST_DIR/secrets" ]; then
+              rm -rf secrets; cp -a "$PERSIST_DIR/secrets" secrets
+            else
+              [ -d secrets ] || node scripts/gen-secrets.mjs
+              cp -a secrets "$PERSIST_DIR/secrets"
+            fi
+
+            # --- deploy/.env
+            if [ -f "$PERSIST_DIR/deploy.env" ]; then cp "$PERSIST_DIR/deploy.env" deploy/.env
+            else
+              [ -f deploy/.env ] || cp deploy/.env.example deploy/.env
+              cp deploy/.env "$PERSIST_DIR/deploy.env"
+            fi
+
+            # --- TLS: the smoke test reaches the app through the DinD hostname "docker", so the
+            #     certificate needs that SAN as well as localhost.
+            mkdir -p deploy/nginx/certs
+            if [ -f "$PERSIST_DIR/server.crt" ] && [ -f "$PERSIST_DIR/server.key" ]; then
+              cp "$PERSIST_DIR/server.crt" "$PERSIST_DIR/server.key" deploy/nginx/certs/
+            fi
+            if [ ! -f deploy/nginx/certs/server.crt ] || ! openssl x509 -in deploy/nginx/certs/server.crt -noout -text | grep -q 'DNS:docker'; then
+              sh deploy/nginx/gen-local-cert.sh docker
+            fi
+            cp deploy/nginx/certs/server.crt deploy/nginx/certs/server.key "$PERSIST_DIR/"
+          '''
+        }
+      }
+    }
+
+    stage('Install') {
+      when { expression { return params.RUN_TESTS } }
+      steps {
+        dir(env.APP_DIR) {
+          sh 'npm ci --no-audit --no-fund'
+        }
+      }
+    }
+
+    stage('Lint') {
+      when { expression { return params.RUN_TESTS } }
+      steps {
+        dir(env.APP_DIR) {
+          sh 'npm run lint'
+        }
+      }
+    }
+
+    stage('Test') {
+      when { expression { return params.RUN_TESTS } }
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            mkdir -p "$MONGOMS_DOWNLOAD_DIR"
+            npm test
+          '''
+        }
+      }
+      post {
+        always {
+          // Per-package vitest JUnit reports (written because CI=true).
+          junit testResults: 'app/**/test-results/junit.xml', allowEmptyResults: true, skipPublishingChecks: true
+        }
+      }
+    }
+
+    stage('Build client') {
+      when { expression { return params.RUN_TESTS } }
+      steps {
+        dir(env.APP_DIR) {
+          sh 'npm run build'
+        }
+      }
+    }
+
+    stage('Dependency audit') {
+      when { expression { return params.RUN_TESTS && params.RUN_AUDIT } }
+      steps {
+        dir(env.APP_DIR) {
+          script {
+            def rc = sh(returnStatus: true, script: 'npm run audit:prod')
+            if (rc != 0) {
+              if (params.AUDIT_FAILS_BUILD) {
+                error('npm audit found HIGH/CRITICAL advisories in production dependencies')
+              } else {
+                unstable('npm audit found HIGH/CRITICAL advisories in production dependencies')
+              }
+            }
+          }
+        }
+      }
+    }
+
+    stage('Build images') {
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            TAG="${DEPLOY_TAG:-jenkins-$BUILD_NUMBER}"
+            echo "Building $IMAGE_PREFIX-{api,authority,web}:$TAG"
+            IMAGE_PREFIX="$IMAGE_PREFIX" TAG="$TAG" docker compose --env-file "$DEPLOY_ENV" build
+            echo "$TAG" > "$STATE_DIR/secureshare-next-tag"
+          '''
+        }
+      }
+    }
+
+    stage('Scan images') {
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            TAG="${DEPLOY_TAG:-jenkins-$BUILD_NUMBER}"
+            SCAN_EXIT=0
+            if [ "${FAIL_ON_VULNS}" = "true" ]; then SCAN_EXIT=1; fi
+            echo "Trivy scan: HIGH/CRITICAL findings are report-only (FAIL_ON_VULNS=${FAIL_ON_VULNS})"
+            mkdir -p trivy-reports "$TRIVY_CACHE_DIR"
+            for svc in api authority web; do
+              trivy image --cache-dir "$TRIVY_CACHE_DIR" --severity CRITICAL,HIGH --ignore-unfixed \
+                --exit-code 0 "$IMAGE_PREFIX-$svc:$TAG"
+              trivy image --cache-dir "$TRIVY_CACHE_DIR" --severity CRITICAL,HIGH --ignore-unfixed \
+                --exit-code "$SCAN_EXIT" --format json --output "trivy-reports/$svc.json" "$IMAGE_PREFIX-$svc:$TAG"
+            done
+          '''
+        }
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'app/trivy-reports/*.json', allowEmptyArchive: true
+        }
+      }
+    }
+
+    stage('Deploy stack') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            TAG="${DEPLOY_TAG:-jenkins-$BUILD_NUMBER}"
+            IMAGE_PREFIX="$IMAGE_PREFIX" TAG="$TAG" docker compose --env-file "$DEPLOY_ENV" up -d --remove-orphans
+          '''
+        }
+      }
+    }
+
+    stage('Health and smoke test') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        dir(env.APP_DIR) {
+          sh '''
+            set -eu
+            export TAG="${DEPLOY_TAG:-jenkins-$BUILD_NUMBER}"
+            ok=0
+            for i in $(seq 1 45); do
+              if curl -fsSk https://docker/api/health >/dev/null && curl -fsSk https://docker/authority/health >/dev/null; then ok=1; break; fi
+              sleep 2
+            done
+            test "$ok" = 1 || { echo "Stack did not become healthy"; docker compose --env-file "$DEPLOY_ENV" ps; docker compose --env-file "$DEPLOY_ENV" logs --tail 50; exit 1; }
+            curl -fsSk https://docker/api/health; echo
+            curl -fsSk https://docker/authority/health; echo
+            curl -fsSk https://docker/docs >/dev/null
+          '''
+          script {
+            if (params.RUN_SMOKE) {
+              withEnv([
+                'BASE_URL=https://docker',
+                "NODE_EXTRA_CA_CERTS=${env.WORKSPACE}/${env.APP_DIR}/deploy/nginx/certs/server.crt"
+              ]) {
+                // The smoke test imports @secureshare/crypto, so dependencies are needed even when RUN_TESTS=false.
+                sh '''
+                  set -eu
+                  [ -d node_modules ] || npm ci --no-audit --no-fund
+                  npm run smoke
+                '''
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      sh '''
+        set -eu
+        if [ -f "$STATE_DIR/secureshare-next-tag" ] && [ "${DEPLOY}" = "true" ]; then
+          cp "$STATE_DIR/secureshare-next-tag" "$STATE_DIR/secureshare-last-good-tag"
+        fi
+      '''
+      echo 'Pipeline succeeded.'
+    }
+    failure {
+      sh '''
+        set -eu
+        if [ "${DEPLOY}" != "true" ]; then exit 0; fi
+        PREVIOUS="$(cat "$STATE_DIR/secureshare-last-good-tag" 2>/dev/null || true)"
+        if [ -n "$PREVIOUS" ] && [ -d "$WORKSPACE/$APP_DIR" ]; then
+          echo "Rolling back to $PREVIOUS"
+          cd "$WORKSPACE/$APP_DIR"
+          IMAGE_PREFIX="$IMAGE_PREFIX" TAG="$PREVIOUS" docker compose --env-file "$DEPLOY_ENV" up -d --remove-orphans
+        else
+          echo "No previous good tag recorded; nothing to roll back to."
+        fi
+      '''
+    }
+  }
+}
